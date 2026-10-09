@@ -1,0 +1,17 @@
+{
+  "name": "Chemistry English Lab",
+  "short_name": "Chem Lab",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#061018",
+  "theme_color": "#071019",
+  "description": "Chemistry vocabulary PWA based on Chemistry: The Central Science, 15th Global Edition.",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
