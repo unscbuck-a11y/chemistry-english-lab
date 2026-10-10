@@ -11,8 +11,11 @@
   const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
   const MODEL_ID = "onnx-community/Kokoro-82M-v1.0-ONNX";
   const MODULE_URL = "https://cdn.jsdelivr.net/npm/kokoro-js@1.2.1/+esm";
-  let ttsEngine = null;
+  let ttsWorker = null;
   let loadPromise = null;
+  let workerReady = false;
+  let workerRequest = 0;
+  const pendingRequests = new Map();
   let currentAudio = null;
   let currentUrl = null;
   let activeCard = null;
@@ -113,39 +116,72 @@
     }
   }
 
+  function ensureWorker() {
+    if (ttsWorker) return ttsWorker;
+    if (!("Worker" in window)) throw new Error("当前浏览器不支持 Web Worker");
+    ttsWorker = new Worker("./tts-worker.js?v=kokoro20261010-worker1", { type: "module" });
+    ttsWorker.addEventListener("message", event => {
+      const data = event.data || {};
+      if (data.type === "status") {
+        status(data.message || "正在准备语音模型…", data.kind || "loading");
+      } else if (data.type === "ready") {
+        workerReady = true;
+        status("本地语音模型已就绪。选择美音或英音后即可朗读。", "ready");
+        const button = $("#ttsLoad");
+        if (button) { button.disabled = false; button.textContent = "✓ 语音模型已加载"; }
+        const pending = pendingRequests.get(data.requestId);
+        if (pending) { pendingRequests.delete(data.requestId); pending.resolve(true); }
+      } else if (data.type === "audio") {
+        const pending = pendingRequests.get(data.requestId);
+        if (pending) { pendingRequests.delete(data.requestId); pending.resolve(data.blob); }
+      } else if (data.type === "error") {
+        const pending = pendingRequests.get(data.requestId);
+        if (pending) { pendingRequests.delete(data.requestId); pending.reject(new Error(data.message || "语音生成失败")); }
+        if (data.requestId === "init") {
+          const button = $("#ttsLoad");
+          if (button) { button.disabled = false; button.textContent = "↻ 重试加载语音"; }
+          status("模型加载失败：请检查网络后重试。页面仍可操作；可改用设备系统语音。", "error");
+        }
+      }
+    });
+    ttsWorker.addEventListener("error", event => {
+      console.error("Kokoro worker error", event);
+      status("后台语音模块启动失败；请刷新页面重试。", "error");
+      for (const [, pending] of pendingRequests) pending.reject(new Error("后台语音模块启动失败"));
+      pendingRequests.clear();
+    });
+    return ttsWorker;
+  }
+
+  function workerRequestPromise(type, payload = {}) {
+    const worker = ensureWorker();
+    const requestId = ++workerRequest;
+    return new Promise((resolve, reject) => {
+      pendingRequests.set(requestId, { resolve, reject });
+      worker.postMessage({ type, requestId, ...payload });
+    });
+  }
+
   async function initializeModel() {
-    if (ttsEngine) {
-      status("本地语音模型已就绪，可离线生成语音（浏览器仍需保留模型缓存）。", "ready");
-      return ttsEngine;
+    if (workerReady) {
+      status("本地语音模型已就绪，可在后台生成语音。", "ready");
+      return true;
     }
     if (loadPromise) return loadPromise;
     const loadButton = $("#ttsLoad");
     if (loadButton) { loadButton.disabled = true; loadButton.textContent = "模型加载中…"; }
-    status("正在加载语音运行库并下载模型；首次加载需要等待，请保持网络连接…", "loading");
+    status("正在后台初始化语音模型；页面保持可操作…", "loading");
     loadPromise = (async () => {
       try {
-        const module = await import(MODULE_URL);
-        const KokoroTTS = module.KokoroTTS || module.default?.KokoroTTS;
-        if (!KokoroTTS) throw new Error("没有找到 KokoroTTS 导出项");
-        ttsEngine = await KokoroTTS.from_pretrained(MODEL_ID, {
-          dtype: "q8",
-          device: "wasm",
-          progress_callback: (p) => {
-            if (!p) return;
-            const name = p.file || p.name || p.status || "模型文件";
-            const percent = Number.isFinite(p.progress) ? ` ${Math.round(p.progress)}%` : "";
-            status(`正在下载/缓存：${name}${percent}。首次使用请稍候…`, "loading");
-          }
-        });
-        status("本地语音模型已就绪。选择美音或英音后即可朗读。", "ready");
-        return ttsEngine;
+        await workerRequestPromise("init");
+        return true;
       } catch (error) {
         console.error("Kokoro TTS initialization failed", error);
-        status("模型加载失败：请检查网络后重试。若设备内存不足，可改用系统自带语音。", "error");
+        status("模型加载失败：请检查网络后重试。页面仍可操作；可改用设备系统语音。", "error");
         throw error;
       } finally {
         loadPromise = null;
-        if (loadButton) { loadButton.disabled = false; loadButton.textContent = ttsEngine ? "✓ 语音模型已加载" : "↻ 重试加载语音"; }
+        if (loadButton) { loadButton.disabled = false; loadButton.textContent = workerReady ? "✓ 语音模型已加载" : "↻ 重试加载语音"; }
       }
     })();
     return loadPromise;
@@ -180,13 +216,14 @@
     activeCard = card;
     if (card) card.classList.add("tts-speaking");
     try {
-      const engine = await initializeModel();
+      await initializeModel();
       if (myRequest !== requestId) return;
-      status("正在本机生成语音…", "loading");
+      status("正在后台生成语音，页面仍可操作…", "loading");
       const voice = $("#ttsVoice")?.value || "af_bella";
-      const result = await engine.generate(text, { voice, speed: 1 });
+      const blob = await workerRequestPromise("generate", {
+        text, voice, speed: 1
+      });
       if (myRequest !== requestId) return;
-      const blob = result.toBlob();
       currentUrl = URL.createObjectURL(blob);
       currentAudio = new Audio(currentUrl);
       currentAudio.playbackRate = Number($("#ttsRate")?.value || 0.95);
