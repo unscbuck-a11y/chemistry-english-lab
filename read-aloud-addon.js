@@ -16,6 +16,9 @@
   let workerReady = false;
   let workerRequest = 0;
   const pendingRequests = new Map();
+  // Keep recently generated clips in memory so repeat practice is instant.
+  const audioCache = new Map();
+  const AUDIO_CACHE_LIMIT = 60;
   let currentAudio = null;
   let currentUrl = null;
   let activeCard = null;
@@ -119,7 +122,7 @@
   function ensureWorker() {
     if (ttsWorker) return ttsWorker;
     if (!("Worker" in window)) throw new Error("当前浏览器不支持 Web Worker");
-    ttsWorker = new Worker("./tts-worker.js?v=kokoro20261010-worker1", { type: "module" });
+    ttsWorker = new Worker("./tts-worker.js?v=kokoro20261010-worker2", { type: "module" });
     ttsWorker.addEventListener("message", event => {
       const data = event.data || {};
       if (data.type === "status") {
@@ -206,15 +209,42 @@
     status(workerReady ? "已停止。" : "已停止；尚未加载 Kokoro 模型，当前可使用设备系统语音。", "normal");
   }
 
+  function chooseSystemVoice(voiceId) {
+    if (!("speechSynthesis" in window)) return null;
+    const voices = window.speechSynthesis.getVoices() || [];
+    if (!voices.length) return null;
+    const british = String(voiceId || "af_bella").startsWith("b");
+    const lang = british ? "en-GB" : "en-US";
+    const matching = voices.filter(v => String(v.lang || "").toLowerCase() === lang.toLowerCase());
+    const pool = matching.length ? matching : voices.filter(v => String(v.lang || "").toLowerCase().startsWith(british ? "en-gb" : "en-us"));
+    const candidates = pool.length ? pool : voices.filter(v => String(v.lang || "").toLowerCase().startsWith("en"));
+    if (!candidates.length) return null;
+    const wantsFemale = /^af_|^bf_/.test(String(voiceId || ""));
+    const names = candidates.map(v => ({ voice: v, name: String(v.name || "").toLowerCase() }));
+    const preferred = wantsFemale
+      ? ["samantha", "ava", "jenny", "aria", "zira", "susan", "female", "google us english"]
+      : ["daniel", "alex", "david", "guy", "male", "google uk english"];
+    for (const hint of preferred) {
+      const found = names.find(item => item.name.includes(hint));
+      if (found) return found.voice;
+    }
+    return candidates.find(v => v.default) || candidates[0];
+  }
+
   function speakWithSystemVoice(text, card, myRequest) {
     if (!("speechSynthesis" in window) || !("SpeechSynthesisUtterance" in window)) {
-      status("当前浏览器没有可用的系统语音。请先点“初始化离线语音”。", "error");
+      status("当前浏览器没有可用的系统语音。请检查设备的文字转语音设置。", "error");
       return;
     }
     window.speechSynthesis.cancel();
     const utterance = new SpeechSynthesisUtterance(text);
     const voiceId = $("#ttsVoice")?.value || "af_bella";
     utterance.lang = voiceId.startsWith("b") ? "en-GB" : "en-US";
+    const selectedVoice = chooseSystemVoice(voiceId);
+    if (selectedVoice) {
+      utterance.voice = selectedVoice;
+      utterance.lang = selectedVoice.lang || utterance.lang;
+    }
     utterance.rate = Number($("#ttsRate")?.value || 0.95);
     utterance.onend = () => {
       if (myRequest === requestId) {
@@ -250,11 +280,21 @@
     }
 
     try {
-      status("正在后台生成 Kokoro 语音，页面仍可操作…", "loading");
       const voice = $("#ttsVoice")?.value || "af_bella";
-      const blob = await workerRequestPromise("generate", {
-        text, voice, speed: 1
-      });
+      const cacheKey = `${voice}::${text}`;
+      let blob = audioCache.get(cacheKey);
+      if (blob) {
+        // Refresh insertion order for a small in-memory LRU cache.
+        audioCache.delete(cacheKey);
+        audioCache.set(cacheKey, blob);
+        status("命中语音缓存，立即播放。", "ready");
+      } else {
+        status("正在后台生成 Kokoro 语音（首次生成会较慢）…", "loading");
+        blob = await workerRequestPromise("generate", { text, voice, speed: 1 });
+        if (myRequest !== requestId) return;
+        audioCache.set(cacheKey, blob);
+        while (audioCache.size > AUDIO_CACHE_LIMIT) audioCache.delete(audioCache.keys().next().value);
+      }
       if (myRequest !== requestId) return;
       currentUrl = URL.createObjectURL(blob);
       currentAudio = new Audio(currentUrl);
@@ -278,7 +318,7 @@
       console.error("Kokoro speech generation failed", error);
       clearAudio();
       speakWithSystemVoice(text, card, myRequest);
-      status("Kokoro 生成失败，已切换到设备系统语音。", "error");
+      status("Kokoro 生成失败，已切换到设备系统语音；请检查网络或更换设备语音设置。", "error");
     }
   }
 
@@ -313,6 +353,13 @@
       speakText(question, $("#question"));
     }
   });
+
+  // Some browsers populate their voice list asynchronously.
+  if ("speechSynthesis" in window) {
+    window.speechSynthesis.addEventListener?.("voiceschanged", () => {
+      // The list is queried at speaking time; this event simply lets the browser finish loading it.
+    });
+  }
 
   const observer = new MutationObserver(() => addControls());
   function init() {
