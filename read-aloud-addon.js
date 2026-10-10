@@ -52,7 +52,9 @@
         <button type="button" data-tts="example">🔊 朗读例句</button>
         <button type="button" data-tts="all">▶ 单词＋例句</button>`;
       const example = $(".example", card);
+      const existingActions = $(".actions", card);
       if (example) example.insertAdjacentElement("afterend", actions);
+      else if (existingActions) card.insertBefore(actions, existingActions);
       else card.appendChild(actions);
     });
 
@@ -179,13 +181,29 @@
     addControls();
     getVoices();
     if (window.speechSynthesis) window.speechSynthesis.addEventListener?.("voiceschanged", getVoices);
-    const words = $("#words");
-    if (words) observer.observe(words, { childList: true, subtree: true });
-    const flash = $("#flash");
-    if (flash) observer.observe(flash, { childList: true, subtree: true });
-    const quiz = $("#quiz");
-    if (quiz) observer.observe(quiz, { childList: true, subtree: true });
+    // Watch the whole page: the vocabulary cards are rebuilt with innerHTML
+    // whenever the user searches, filters, or changes chapters.
+    if (document.body) observer.observe(document.body, { childList: true, subtree: true });
   }
-  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init, { once: true });
-  else init();
+  function installRenderHook() {
+    // renderWords is a global function in the current standalone site.
+    if (typeof window.renderWords === "function" && !window.renderWords.__ttsHooked) {
+      const originalRenderWords = window.renderWords;
+      const wrappedRenderWords = function (...args) {
+        const result = originalRenderWords.apply(this, args);
+        // Run after renderWords replaces #words.innerHTML.
+        Promise.resolve().then(addControls);
+        return result;
+      };
+      wrappedRenderWords.__ttsHooked = true;
+      window.renderWords = wrappedRenderWords;
+    }
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", () => { init(); installRenderHook(); }, { once: true });
+  } else {
+    init();
+    installRenderHook();
+  }
 })();
