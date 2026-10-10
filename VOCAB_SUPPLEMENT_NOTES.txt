@@ -1,0 +1,38 @@
+Chemistry English Lab — All-Chapter Vocabulary Expansion v3
+
+This release replaces the earlier vocabulary package with a broader, chapter-by-chapter build. It keeps the existing app features and expands terminology across all 24 chapters.
+
+Vocabulary entry counts by chapter (includes original core terms and supplements):
+Chapter 1: 57 entries — Introduction: Matter, Energy, and Measurement
+Chapter 2: 38 entries — Atoms, Molecules, and Ions
+Chapter 3: 41 entries — Stoichiometry
+Chapter 4: 32 entries — Aqueous Reactions and Solution Stoichiometry
+Chapter 5: 37 entries — Thermochemistry
+Chapter 6: 121 entries — Electronic Structure of Atoms
+Chapter 7: 88 entries — Periodic Properties of the Elements
+Chapter 8: 29 entries — Basic Concepts of Chemical Bonding
+Chapter 9: 40 entries — Molecular Geometry and Bonding Theories
+Chapter 10: 35 entries — Gases
+Chapter 11: 36 entries — Liquids and Intermolecular Forces
+Chapter 12: 32 entries — Solids and Modern Materials
+Chapter 13: 34 entries — Properties of Solutions
+Chapter 14: 34 entries — Chemical Kinetics
+Chapter 15: 37 entries — Chemical Equilibrium
+Chapter 16: 41 entries — Acid–Base Equilibria
+Chapter 17: 40 entries — Additional Aspects of Aqueous Equilibria
+Chapter 18: 38 entries — Chemistry of the Environment
+Chapter 19: 35 entries — Chemical Thermodynamics
+Chapter 20: 33 entries — Electrochemistry
+Chapter 21: 39 entries — Nuclear Chemistry
+Chapter 22: 40 entries — Chemistry of the Nonmetals
+Chapter 23: 39 entries — Transition Metals and Coordination Chemistry
+Chapter 24: 55 entries — The Chemistry of Life: Organic and Biological Chemistry
+
+Total entries: 1051
+Newly added in this release: 390
+
+Included files: index.html, manifest.webmanifest, sw.js, icon.svg, README.txt, VOCAB_SUPPLEMENT_NOTES.txt
+
+Update an existing GitHub Pages deployment: upload these files to the repository ROOT and commit. Replace index.html and sw.js if asked. Keep the files at root, not inside an extra folder. The service-worker cache name has been bumped to encourage the installed app to refresh.
+
+Accuracy note: this is an expanded study vocabulary aligned to the textbook's chapter topics, not a verified exhaustive index of every word on all 1,835 pages. Translations are study glosses; sample sentences are original learning examples, not quotations from the textbook. For a truly exhaustive list, the source PDFs must be processed chapter by chapter and each candidate term checked against the actual page text.
