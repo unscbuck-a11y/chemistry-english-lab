@@ -1,16 +1,46 @@
-/* Chemistry English Lab — Read Aloud Add-on
- * Uses the browser/device Web Speech API; no external service or API key.
+/* Chemistry English Lab — Kokoro local TTS add-on
+ * Runs Kokoro-82M in the browser. Model/runtime are downloaded on first use;
+ * speech synthesis itself is local and does not send the vocabulary text to a TTS API.
  */
 (() => {
   "use strict";
   if (window.__chemistryReadAloudInstalled) return;
-  console.info("[Chemistry Read Aloud] addon loaded — fix2");
   window.__chemistryReadAloudInstalled = true;
 
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
-  let voices = [];
+  const MODEL_ID = "onnx-community/Kokoro-82M-v1.0-ONNX";
+  const MODULE_URL = "https://cdn.jsdelivr.net/npm/kokoro-js@1.2.1/+esm";
+  let ttsEngine = null;
+  let loadPromise = null;
+  let currentAudio = null;
+  let currentUrl = null;
   let activeCard = null;
+  let requestId = 0;
+  let lastText = "";
+  let lastCard = null;
+
+  const VOICES = [
+    { id: "af_bella", label: "美音 · Bella（女声）" },
+    { id: "af_heart", label: "美音 · Heart（女声）" },
+    { id: "af_nicole", label: "美音 · Nicole（女声）" },
+    { id: "af_sarah", label: "美音 · Sarah（女声）" },
+    { id: "am_michael", label: "美音 · Michael（男声）" },
+    { id: "am_fenrir", label: "美音 · Fenrir（男声）" },
+    { id: "bf_emma", label: "英音 · Emma（女声）" },
+    { id: "bf_isabella", label: "英音 · Isabella（女声）" },
+    { id: "bf_alice", label: "英音 · Alice（女声）" },
+    { id: "bm_george", label: "英音 · George（男声）" },
+    { id: "bm_lewis", label: "英音 · Lewis（男声）" },
+    { id: "bm_fable", label: "英音 · Fable（男声）" }
+  ];
+
+  function status(message, kind = "normal") {
+    const el = $("#ttsStatus");
+    if (!el) return;
+    el.textContent = message;
+    el.dataset.kind = kind;
+  }
 
   function addControls() {
     const library = $("#library");
@@ -20,26 +50,27 @@
       panel.className = "tts-panel";
       panel.innerHTML = `
         <label>朗读语速
-          <input id="ttsRate" type="range" min="0.65" max="1.35" step="0.05" value="0.95" aria-label="朗读语速">
+          <input id="ttsRate" type="range" min="0.70" max="1.25" step="0.05" value="0.95" aria-label="朗读语速">
           <span id="ttsRateValue">0.95×</span>
         </label>
         <label>发音人
-          <select id="ttsVoice" aria-label="选择发音人"><option value="auto">自动选择英语音色</option></select>
+          <select id="ttsVoice" aria-label="选择英语发音人">${VOICES.map(v => `<option value="${v.id}">${v.label}</option>`).join("")}</select>
         </label>
+        <button type="button" id="ttsLoad">⬇ 初始化离线语音</button>
         <button type="button" id="ttsPause">⏸ 暂停</button>
         <button type="button" id="ttsResume">▶ 继续</button>
         <button type="button" id="ttsStop">■ 停止</button>
-        <span class="tts-note">使用设备自带语音；可用音色取决于浏览器和系统。</span>`;
+        <span id="ttsStatus" class="tts-note" role="status" aria-live="polite">Kokoro 本地语音：首次使用需联网下载约 100 MB 模型；准备好后在本机生成语音。</span>`;
       const layout = $(".layout", library);
       if (layout) library.insertBefore(panel, layout);
       $("#ttsRate", panel).addEventListener("input", e => {
         $("#ttsRateValue").textContent = `${Number(e.target.value).toFixed(2)}×`;
+        if (currentAudio) currentAudio.playbackRate = Number(e.target.value);
       });
-      $("#ttsPause", panel).addEventListener("click", () => {
-        if (window.speechSynthesis) window.speechSynthesis.pause();
-      });
+      $("#ttsLoad", panel).addEventListener("click", initializeModel);
+      $("#ttsPause", panel).addEventListener("click", () => { if (currentAudio) currentAudio.pause(); });
       $("#ttsResume", panel).addEventListener("click", () => {
-        if (window.speechSynthesis) window.speechSynthesis.resume();
+        if (currentAudio) currentAudio.play().catch(() => status("请再次点击继续播放。", "error"));
       });
       $("#ttsStop", panel).addEventListener("click", stopSpeaking);
     }
@@ -79,73 +110,115 @@
       btn.textContent = "🔊 朗读题目";
       btn.style.margin = "0 0 12px";
       question.insertAdjacentElement("afterend", btn);
-      btn.addEventListener("click", () => speakText(question.textContent || "", detectLanguage(question.textContent || "")));
     }
   }
 
-  function getVoices() {
-    if (!window.speechSynthesis) return;
-    voices = window.speechSynthesis.getVoices() || [];
-    const select = $("#ttsVoice");
-    if (!select) return;
-    const previous = select.value || "auto";
-    select.innerHTML = '<option value="auto">自动选择英语音色</option>';
-    voices.forEach((voice, index) => {
-      const option = document.createElement("option");
-      option.value = String(index);
-      option.textContent = `${voice.name} (${voice.lang})${voice.default ? " · 默认" : ""}`;
-      select.appendChild(option);
-    });
-    if ([...select.options].some(option => option.value === previous)) select.value = previous;
-    else {
-      const preferred = voices.findIndex(v => /^en(-|_)/i.test(v.lang) && /US|GB|AU|CA/i.test(v.lang));
-      if (preferred >= 0) select.value = String(preferred);
+  async function initializeModel() {
+    if (ttsEngine) {
+      status("本地语音模型已就绪，可离线生成语音（浏览器仍需保留模型缓存）。", "ready");
+      return ttsEngine;
     }
+    if (loadPromise) return loadPromise;
+    const loadButton = $("#ttsLoad");
+    if (loadButton) { loadButton.disabled = true; loadButton.textContent = "模型加载中…"; }
+    status("正在加载语音运行库并下载模型；首次加载需要等待，请保持网络连接…", "loading");
+    loadPromise = (async () => {
+      try {
+        const module = await import(MODULE_URL);
+        const KokoroTTS = module.KokoroTTS || module.default?.KokoroTTS;
+        if (!KokoroTTS) throw new Error("没有找到 KokoroTTS 导出项");
+        ttsEngine = await KokoroTTS.from_pretrained(MODEL_ID, {
+          dtype: "q8",
+          device: "wasm",
+          progress_callback: (p) => {
+            if (!p) return;
+            const name = p.file || p.name || p.status || "模型文件";
+            const percent = Number.isFinite(p.progress) ? ` ${Math.round(p.progress)}%` : "";
+            status(`正在下载/缓存：${name}${percent}。首次使用请稍候…`, "loading");
+          }
+        });
+        status("本地语音模型已就绪。选择美音或英音后即可朗读。", "ready");
+        return ttsEngine;
+      } catch (error) {
+        console.error("Kokoro TTS initialization failed", error);
+        status("模型加载失败：请检查网络后重试。若设备内存不足，可改用系统自带语音。", "error");
+        throw error;
+      } finally {
+        loadPromise = null;
+        if (loadButton) { loadButton.disabled = false; loadButton.textContent = ttsEngine ? "✓ 语音模型已加载" : "↻ 重试加载语音"; }
+      }
+    })();
+    return loadPromise;
   }
 
-  function detectLanguage(text) {
-    return /[\u3400-\u9fff]/.test(text) ? "zh-CN" : "en-US";
-  }
-
-  function chooseVoice(lang) {
-    const select = $("#ttsVoice");
-    if (select && select.value !== "auto" && voices[Number(select.value)]) {
-      const chosen = voices[Number(select.value)];
-      if (chosen.lang.toLowerCase().startsWith(lang.slice(0, 2).toLowerCase())) return chosen;
+  function clearAudio() {
+    if (currentAudio) {
+      currentAudio.pause();
+      currentAudio.onended = currentAudio.onerror = null;
+      currentAudio.src = "";
+      currentAudio = null;
     }
-    const langPrefix = lang.slice(0, 2).toLowerCase();
-    return voices.find(v => v.lang.toLowerCase().startsWith(langPrefix) && /US|GB|AU|CA/i.test(v.lang))
-      || voices.find(v => v.lang.toLowerCase().startsWith(langPrefix))
-      || null;
-  }
-
-  function speakText(rawText, lang = "en-US", card = null) {
-    const text = String(rawText || "").trim();
-    if (!text) return;
-    if (!("speechSynthesis" in window) || !("SpeechSynthesisUtterance" in window)) {
-      alert("当前浏览器不支持网页朗读，请换用最新版 Chrome、Edge 或 Safari。");
-      return;
-    }
-    stopSpeaking();
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = lang;
-    const voice = chooseVoice(lang);
-    if (voice) utterance.voice = voice;
-    utterance.rate = Number($("#ttsRate")?.value || 0.95);
-    utterance.pitch = 1;
-    activeCard = card;
-    if (card) card.classList.add("tts-speaking");
-    utterance.onend = utterance.onerror = () => {
-      if (card) card.classList.remove("tts-speaking");
-      if (activeCard === card) activeCard = null;
-    };
-    window.speechSynthesis.speak(utterance);
+    if (currentUrl) { URL.revokeObjectURL(currentUrl); currentUrl = null; }
+    $$(".tts-speaking").forEach(el => el.classList.remove("tts-speaking"));
+    activeCard = null;
   }
 
   function stopSpeaking() {
-    if (window.speechSynthesis) window.speechSynthesis.cancel();
-    $$(".tts-speaking").forEach(el => el.classList.remove("tts-speaking"));
-    activeCard = null;
+    requestId++;
+    clearAudio();
+    if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+    status(ttsEngine ? "已停止。" : "尚未加载模型；点击“初始化离线语音”开始。", "normal");
+  }
+
+  async function speakText(rawText, card = null) {
+    const text = String(rawText || "").trim();
+    if (!text) return;
+    lastText = text;
+    lastCard = card;
+    const myRequest = ++requestId;
+    clearAudio();
+    activeCard = card;
+    if (card) card.classList.add("tts-speaking");
+    try {
+      const engine = await initializeModel();
+      if (myRequest !== requestId) return;
+      status("正在本机生成语音…", "loading");
+      const voice = $("#ttsVoice")?.value || "af_bella";
+      const result = await engine.generate(text, { voice, speed: 1 });
+      if (myRequest !== requestId) return;
+      const blob = result.toBlob();
+      currentUrl = URL.createObjectURL(blob);
+      currentAudio = new Audio(currentUrl);
+      currentAudio.playbackRate = Number($("#ttsRate")?.value || 0.95);
+      currentAudio.onended = () => {
+        if (myRequest === requestId) {
+          clearAudio();
+          status("朗读完成。语音由本地模型生成。", "ready");
+        }
+      };
+      currentAudio.onerror = () => {
+        if (myRequest === requestId) {
+          clearAudio();
+          status("音频播放失败，请重新点击朗读。", "error");
+        }
+      };
+      await currentAudio.play();
+      status(`正在朗读 · ${$("#ttsVoice")?.selectedOptions?.[0]?.textContent || voice}`, "ready");
+    } catch (error) {
+      if (myRequest !== requestId) return;
+      console.error("Kokoro speech generation failed", error);
+      if ("speechSynthesis" in window && "SpeechSynthesisUtterance" in window) {
+        clearAudio();
+        const utterance = new SpeechSynthesisUtterance(text);
+        const voiceId = $("#ttsVoice")?.value || "af_bella";
+        utterance.lang = voiceId.startsWith("b") ? "en-GB" : "en-US";
+        utterance.rate = Number($("#ttsRate")?.value || 0.95);
+        utterance.onend = () => { if (card) card.classList.remove("tts-speaking"); };
+        window.speechSynthesis.cancel();
+        window.speechSynthesis.speak(utterance);
+        status("本地模型不可用，临时使用设备系统语音（音色取决于设备）。", "error");
+      }
+    }
   }
 
   document.addEventListener("click", event => {
@@ -156,9 +229,9 @@
       const term = $(".word h3", card)?.textContent || "";
       const example = $(".example", card)?.textContent || "";
       const action = button.dataset.tts;
-      if (action === "term") speakText(term, "en-US", card);
-      if (action === "example") speakText(example, "en-US", card);
-      if (action === "all") speakText([term, example].filter(Boolean).join(". "), "en-US", card);
+      if (action === "term") speakText(term, card);
+      if (action === "example") speakText(example, card);
+      if (action === "all") speakText([term, example].filter(Boolean).join(". "), card);
       return;
     }
     const flashButton = event.target.closest("button[data-tts-flash]");
@@ -166,47 +239,41 @@
       const action = flashButton.dataset.ttsFlash;
       const term = $("#flashTerm")?.textContent || "";
       const example = $("#flashExample")?.textContent || "";
-      if (action === "term") speakText(term, "en-US", $("#flashCard"));
+      if (action === "term") speakText(term, $("#flashCard"));
       if (action === "example") {
         if ($("#flashBack")?.classList.contains("hidden") || !example.trim()) {
           alert("请先点击闪卡翻面，再朗读例句。");
-        } else {
-          speakText(example, "en-US", $("#flashCard"));
-        }
+        } else speakText(example, $("#flashCard"));
       }
+      return;
+    }
+    if (event.target.closest("#ttsQuizQuestion")) {
+      const question = $("#question")?.textContent || "";
+      speakText(question, $("#question"));
     }
   });
 
   const observer = new MutationObserver(() => addControls());
   function init() {
     addControls();
-    // Explicitly refresh controls after the user types in the vocabulary search.
     const searchInput = $("#search");
     if (searchInput && !searchInput.dataset.ttsBound) {
       searchInput.dataset.ttsBound = "1";
-      searchInput.addEventListener("input", () => {
-        requestAnimationFrame(addControls);
-        setTimeout(addControls, 80);
-      });
+      searchInput.addEventListener("input", () => requestAnimationFrame(addControls));
     }
-    getVoices();
-    if (window.speechSynthesis) window.speechSynthesis.addEventListener?.("voiceschanged", getVoices);
-    // Watch the whole page: the vocabulary cards are rebuilt with innerHTML
-    // whenever the user searches, filters, or changes chapters.
     if (document.body) observer.observe(document.body, { childList: true, subtree: true });
   }
+
   function installRenderHook() {
-    // renderWords is a global function in the current standalone site.
     if (typeof window.renderWords === "function" && !window.renderWords.__ttsHooked) {
-      const originalRenderWords = window.renderWords;
-      const wrappedRenderWords = function (...args) {
-        const result = originalRenderWords.apply(this, args);
-        // Run after renderWords replaces #words.innerHTML.
+      const original = window.renderWords;
+      const wrapped = function (...args) {
+        const result = original.apply(this, args);
         Promise.resolve().then(addControls);
         return result;
       };
-      wrappedRenderWords.__ttsHooked = true;
-      window.renderWords = wrappedRenderWords;
+      wrapped.__ttsHooked = true;
+      window.renderWords = wrapped;
     }
   }
 
