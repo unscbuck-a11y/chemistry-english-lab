@@ -76,5 +76,5 @@ window.addEventListener("beforeinstallprompt",e=>{e.preventDefault();deferredPro
 document.querySelector("#installBtn").onclick=async()=>{if(deferredPrompt){deferredPrompt.prompt();await deferredPrompt.userChoice;deferredPrompt=null}};
 if("serviceWorker" in navigator)window.addEventListener("load",()=>navigator.serviceWorker.register("./sw.js"));
 </script>
-<script src="./read-aloud-addon.js?v=responsive-fix-20261010-2"></script>
+<script src="./read-aloud-addon.js?v=voice-cache-fix-20261010-3"></script>
 </body></html>
