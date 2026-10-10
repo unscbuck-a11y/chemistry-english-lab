@@ -76,5 +76,5 @@ window.addEventListener("beforeinstallprompt",e=>{e.preventDefault();deferredPro
 document.querySelector("#installBtn").onclick=async()=>{if(deferredPrompt){deferredPrompt.prompt();await deferredPrompt.userChoice;deferredPrompt=null}};
 if("serviceWorker" in navigator)window.addEventListener("load",()=>navigator.serviceWorker.register("./sw.js"));
 </script>
-<script src="./read-aloud-addon.js?v=kokoro20261010-worker1"></script>
+<script src="./read-aloud-addon.js?v=responsive-fix-20261010-2"></script>
 </body></html>
