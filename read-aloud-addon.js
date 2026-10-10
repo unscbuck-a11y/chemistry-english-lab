@@ -59,11 +59,11 @@
         <label>发音人
           <select id="ttsVoice" aria-label="选择英语发音人">${VOICES.map(v => `<option value="${v.id}">${v.label}</option>`).join("")}</select>
         </label>
-        <button type="button" id="ttsLoad">⬇ 初始化离线语音</button>
+        <button type="button" id="ttsLoad">⬇ 手动加载 Kokoro 高质量语音</button>
         <button type="button" id="ttsPause">⏸ 暂停</button>
         <button type="button" id="ttsResume">▶ 继续</button>
         <button type="button" id="ttsStop">■ 停止</button>
-        <span id="ttsStatus" class="tts-note" role="status" aria-live="polite">Kokoro 本地语音：首次使用需联网下载约 100 MB 模型；准备好后在本机生成语音。</span>`;
+        <span id="ttsStatus" class="tts-note" role="status" aria-live="polite">快速朗读默认使用设备系统语音，不会等待模型。需要 Kokoro 音色时，再手动加载模型（首次需联网下载约 100 MB）。</span>`;
       const layout = $(".layout", library);
       if (layout) library.insertBefore(panel, layout);
       $("#ttsRate", panel).addEventListener("input", e => {
@@ -203,7 +203,33 @@
     requestId++;
     clearAudio();
     if ("speechSynthesis" in window) window.speechSynthesis.cancel();
-    status(ttsEngine ? "已停止。" : "尚未加载模型；点击“初始化离线语音”开始。", "normal");
+    status(workerReady ? "已停止。" : "已停止；尚未加载 Kokoro 模型，当前可使用设备系统语音。", "normal");
+  }
+
+  function speakWithSystemVoice(text, card, myRequest) {
+    if (!("speechSynthesis" in window) || !("SpeechSynthesisUtterance" in window)) {
+      status("当前浏览器没有可用的系统语音。请先点“初始化离线语音”。", "error");
+      return;
+    }
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(text);
+    const voiceId = $("#ttsVoice")?.value || "af_bella";
+    utterance.lang = voiceId.startsWith("b") ? "en-GB" : "en-US";
+    utterance.rate = Number($("#ttsRate")?.value || 0.95);
+    utterance.onend = () => {
+      if (myRequest === requestId) {
+        if (card) card.classList.remove("tts-speaking");
+        status("朗读完成（设备系统语音）。如需 Kokoro 音色，请先手动初始化模型。", "ready");
+      }
+    };
+    utterance.onerror = () => {
+      if (myRequest === requestId) {
+        if (card) card.classList.remove("tts-speaking");
+        status("设备系统语音播放失败。可以尝试初始化 Kokoro 模型。", "error");
+      }
+    };
+    window.speechSynthesis.speak(utterance);
+    status("正在使用设备系统语音快速朗读；不会等待模型加载。", "ready");
   }
 
   async function speakText(rawText, card = null) {
@@ -215,10 +241,16 @@
     clearAudio();
     activeCard = card;
     if (card) card.classList.add("tts-speaking");
+
+    // Critical responsiveness fix: never initialize/download a neural model inside a speak-button click.
+    // Until the user manually initializes Kokoro, use the browser's non-blocking system TTS.
+    if (!workerReady) {
+      speakWithSystemVoice(text, card, myRequest);
+      return;
+    }
+
     try {
-      await initializeModel();
-      if (myRequest !== requestId) return;
-      status("正在后台生成语音，页面仍可操作…", "loading");
+      status("正在后台生成 Kokoro 语音，页面仍可操作…", "loading");
       const voice = $("#ttsVoice")?.value || "af_bella";
       const blob = await workerRequestPromise("generate", {
         text, voice, speed: 1
@@ -230,7 +262,7 @@
       currentAudio.onended = () => {
         if (myRequest === requestId) {
           clearAudio();
-          status("朗读完成。语音由本地模型生成。", "ready");
+          status("朗读完成。语音由 Kokoro 本地模型生成。", "ready");
         }
       };
       currentAudio.onerror = () => {
@@ -244,17 +276,9 @@
     } catch (error) {
       if (myRequest !== requestId) return;
       console.error("Kokoro speech generation failed", error);
-      if ("speechSynthesis" in window && "SpeechSynthesisUtterance" in window) {
-        clearAudio();
-        const utterance = new SpeechSynthesisUtterance(text);
-        const voiceId = $("#ttsVoice")?.value || "af_bella";
-        utterance.lang = voiceId.startsWith("b") ? "en-GB" : "en-US";
-        utterance.rate = Number($("#ttsRate")?.value || 0.95);
-        utterance.onend = () => { if (card) card.classList.remove("tts-speaking"); };
-        window.speechSynthesis.cancel();
-        window.speechSynthesis.speak(utterance);
-        status("本地模型不可用，临时使用设备系统语音（音色取决于设备）。", "error");
-      }
+      clearAudio();
+      speakWithSystemVoice(text, card, myRequest);
+      status("Kokoro 生成失败，已切换到设备系统语音。", "error");
     }
   }
 
