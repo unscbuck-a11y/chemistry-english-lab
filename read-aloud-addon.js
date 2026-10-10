@@ -4,6 +4,7 @@
 (() => {
   "use strict";
   if (window.__chemistryReadAloudInstalled) return;
+  console.info("[Chemistry Read Aloud] addon loaded — fix2");
   window.__chemistryReadAloudInstalled = true;
 
   const $ = (selector, root = document) => root.querySelector(selector);
@@ -176,9 +177,18 @@
     }
   });
 
-  const observer = new MutationObserver(addControls);
+  const observer = new MutationObserver(() => addControls());
   function init() {
     addControls();
+    // Explicitly refresh controls after the user types in the vocabulary search.
+    const searchInput = $("#search");
+    if (searchInput && !searchInput.dataset.ttsBound) {
+      searchInput.dataset.ttsBound = "1";
+      searchInput.addEventListener("input", () => {
+        requestAnimationFrame(addControls);
+        setTimeout(addControls, 80);
+      });
+    }
     getVoices();
     if (window.speechSynthesis) window.speechSynthesis.addEventListener?.("voiceschanged", getVoices);
     // Watch the whole page: the vocabulary cards are rebuilt with innerHTML
