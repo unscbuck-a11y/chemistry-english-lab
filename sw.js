@@ -1,5 +1,5 @@
-const CACHE = 'chem-lab-v8-responsive-fix-20261010-2';
-const ASSETS = ['./','./index.html','./manifest.webmanifest','./icon.svg','./read-aloud-addon.js?v=responsive-fix-20261010-2','./tts-worker.js?v=kokoro20261010-worker1'];
+const CACHE = 'chem-lab-v9-voice-cache-fix-20261010-3';
+const ASSETS = ['./','./index.html','./manifest.webmanifest','./icon.svg','./read-aloud-addon.js?v=voice-cache-fix-20261010-3','./tts-worker.js?v=kokoro20261010-worker2'];
 self.addEventListener('install', event => {
   event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(ASSETS)).then(() => self.skipWaiting()));
 });
